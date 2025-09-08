@@ -21,6 +21,21 @@ Dataset
 - Place BDG2 CSVs under `Building Data Genome Project 2 dataset/` at the repo root (present in this workspace).
 - Expected files: `electricity.csv`, `weather.csv`, `metadata.csv` (others like `gas.csv`, `chilledwater.csv` optional).
 
+Hosting large dataset (deployment-friendly)
+
+- Do not commit the dataset to Git. Instead, host the BDG2 zip (e.g., `Building Data Genome Project 2 dataset.zip`) on one of:
+  - GitHub Releases (recommended for public repos)
+  - S3/GCS/Azure with a direct or presigned URL
+  - Hugging Face Hub dataset repo
+- In Streamlit Cloud, set a secret `BDG2_DATASET_URL` with the direct download link. Optionally set `BDG2_DATASET_SHA256`.
+- The app sidebar includes a "Download dataset" action that fetches and extracts the archive when the dataset folder is missing.
+
+Environment variables (optional)
+
+- `BDG2_DATASET_DIR`: Absolute path to an existing dataset folder.
+- `BDG2_DATASET_URL`: Direct download URL if you prefer env-based config instead of Streamlit Secrets.
+- `BDG2_DATASET_SHA256`: SHA-256 checksum to verify the downloaded archive.
+
 Pages
 
 - Overview: App description and configuration.
@@ -43,4 +58,3 @@ Notes
 - The surrogate environment is intentionally simple for clarity and speed. It adjusts a cooling setpoint delta in a small discrete range and receives a reward balancing energy reduction and comfort.
 - You can refine the surrogate model (e.g., fit a consumption regressor per building with weather + time features) from the Feature Engineering page.
 - The app tries to auto-locate the dataset folder; override it in the sidebar if needed.
-
