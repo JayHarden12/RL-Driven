@@ -38,7 +38,7 @@ def main():
 
     st.caption("Adding time features and merging weather (if available)...")
     feats = add_time_features(df)
-    feats = merge_weather(feats, dataset_dir)
+    feats = merge_weather(feats, dataset_dir, building_id=b)
 
     st.subheader("Preview")
     st.dataframe(feats.head(48), use_container_width=True)
@@ -46,14 +46,15 @@ def main():
     train_model = st.checkbox("Fit baseline consumption model (RandomForest)", value=False)
     model = None
     if train_model:
-        target = "electricity"
-        feature_cols = [c for c in feats.columns if c != target]
-        X = feats[feature_cols].select_dtypes(include=[np.number]).fillna(0.0)
-        y = feats[target].values
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-        model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-        model.fit(X_train, y_train)
-        r2 = model.score(X_test, y_test)
+        with st.spinner("Training baseline model..."):
+            target = "electricity"
+            feature_cols = [c for c in feats.columns if c != target]
+            X = feats[feature_cols].select_dtypes(include=[np.number]).fillna(0.0)
+            y = feats[target].values
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
+            r2 = model.score(X_test, y_test)
         st.success(f"Baseline model trained. Holdout R^2 = {r2:.3f}")
         preds = pd.Series(model.predict(X), index=feats.index, name="baseline_model")
         st.line_chart(pd.concat([feats[target].rename("actual"), preds], axis=1))
@@ -76,4 +77,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

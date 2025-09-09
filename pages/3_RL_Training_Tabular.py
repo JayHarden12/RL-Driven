@@ -47,20 +47,61 @@ def main():
             .asfreq("H")
             .interpolate(limit_direction="both")
         )
-        feats = merge_weather(add_time_features(s), dataset_dir)
+        feats = merge_weather(add_time_features(s), dataset_dir, building_id=b)
 
     assert feats is not None and b is not None
     st.caption(f"Using building: {b}")
 
-    # Train/val split selection
+    # Train/Val/Test split selection
     min_ts, max_ts = feats.index.min(), feats.index.max()
-    default_start = min_ts.to_pydatetime().date()
-    default_split = (min_ts.to_pydatetime() + (max_ts - min_ts) * 0.7).date()
-    start_date = st.date_input("Train start", value=default_start)
-    split_date = st.date_input("Validation start (end of training)", value=default_split)
+    st.markdown("Preset split: Train 2016, Val 2017-H1, Test 2017-H2")
+    use_preset = st.checkbox(
+        "Use preset 2016/2017 Train/Val/Test split",
+        value=True,
+        help="Train: 2016-01-01→2016-12-31; Val: 2017-01-01→2017-06-30; Test: 2017-07-01→2017-12-31",
+    )
 
-    feats_train = feats.loc[str(pd.to_datetime(start_date, utc=True)) : str(pd.to_datetime(split_date, utc=True))]
-    feats_eval = feats.loc[str(pd.to_datetime(split_date, utc=True)) :]
+    if use_preset:
+        tz = "UTC"
+        train_start = pd.Timestamp("2016-01-01 00:00", tz=tz)
+        train_end = pd.Timestamp("2016-12-31 23:00", tz=tz)
+        val_start = pd.Timestamp("2017-01-01 00:00", tz=tz)
+        val_end = pd.Timestamp("2017-06-30 23:00", tz=tz)
+        test_start = pd.Timestamp("2017-07-01 00:00", tz=tz)
+        test_end = pd.Timestamp("2017-12-31 23:00", tz=tz)
+
+        feats_train = feats.loc[str(train_start) : str(train_end)]
+        feats_val = feats.loc[str(val_start) : str(val_end)]
+        feats_test = feats.loc[str(test_start) : str(test_end)]
+
+        if len(feats_train) == 0 or len(feats_val) == 0 or len(feats_test) == 0:
+            st.warning(
+                "Preset split yielded empty data for one or more segments. Uncheck preset to choose dates manually."
+            )
+    else:
+        # Fallback: manual train/eval like before
+        default_start = min_ts.to_pydatetime().date()
+        default_split = (min_ts.to_pydatetime() + (max_ts - min_ts) * 0.7).date()
+        start_date = st.date_input("Train start", value=default_start)
+        split_date = st.date_input("Validation start (end of training)", value=default_split)
+
+        feats_train = feats.loc[str(pd.to_datetime(start_date, utc=True)) : str(pd.to_datetime(split_date, utc=True))]
+        feats_val = pd.DataFrame(index=pd.DatetimeIndex([], tz="UTC"))
+        feats_test = feats.loc[str(pd.to_datetime(split_date, utc=True)) :]
+
+        # Allow limiting evaluation window for faster evaluation
+        st.caption("Speed tip: limit evaluation window if evaluation runs slowly.")
+        if len(feats_test) > 0:
+            max_days = max(1, int((feats_test.index.max() - feats_test.index.min()).days))
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                limit_eval = st.checkbox("Limit evaluation to last N days", value=True)
+            with col2:
+                n_days = st.number_input("N days", min_value=1, max_value=max(1, max_days), value=min(60, max_days), step=1)
+            if limit_eval:
+                feats_test = feats_test.last(f"{int(n_days)}D")
+        else:
+            st.warning("No data in evaluation split; adjust dates above.")
 
     env = _build_env_from_features(feats_train)
 
@@ -116,13 +157,17 @@ def main():
         model = TabularQLearner(env, cfg)
         algo_key = "Q-Learning"
 
+    # Keep the evaluation split in session so Evaluation page uses the latest window
+    # Use the Test split by default so Evaluation runs on 2017-H2 (faster than full year)
+    st.session_state["rl_feats_eval"] = feats_test
+
     if st.button("Train model"):
         with st.spinner("Training RL agent..."):
             model.learn(total_timesteps=total_timesteps)
         st.success("Training complete.")
         st.session_state["rl_model"] = model
         st.session_state["rl_env_train"] = env
-        st.session_state["rl_feats_eval"] = feats_eval
+        st.session_state["rl_feats_eval"] = feats_test
         # Save model
         os.makedirs("artifacts", exist_ok=True)
         if algo_key in ("PPO", "DQN"):

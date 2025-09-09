@@ -64,18 +64,64 @@ def main():
     kpis_bl = compute_kpis(kwh_bl)
     total_rl = kpis_rl[["kwh", "cost_total", "emissions_kg"]].sum()
     total_bl = kpis_bl[["kwh", "cost_total", "emissions_kg"]].sum()
-    delta = (total_bl - total_rl).rename({"kwh": "Energy Saved (kWh)", "cost_total": "Cost Saved (USD)", "emissions_kg": "Emissions Avoided (kgCO2e)"})
-    st.write("Baseline totals:")
-    st.json({k: float(v) for k, v in total_bl.items()})
-    st.write("RL totals:")
-    st.json({k: float(v) for k, v in total_rl.items()})
-    st.write("Improvements:")
-    st.json({k: float(v) for k, v in delta.items()})
+
+    # Summary table with absolute and percent savings (Baseline - RL)
+    summary_df = pd.DataFrame({"baseline": total_bl, "rl": total_rl})
+    summary_df["abs_saving"] = summary_df["baseline"] - summary_df["rl"]
+    summary_df["pct_saving"] = (summary_df["abs_saving"] / summary_df["baseline"]).replace([np.inf, -np.inf], np.nan)
+    st.dataframe(
+        summary_df.rename(index={"kwh": "Energy (kWh)", "cost_total": "Cost (USD)", "emissions_kg": "Emissions (kgCO2e)"}),
+        use_container_width=True,
+    )
+
+    # Downloads for metrics and rollouts
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.download_button(
+            "Download KPIs (CSV)",
+            summary_df.reset_index().rename(columns={"index": "metric"}).to_csv(index=False).encode("utf-8"),
+            file_name="evaluation_kpis.csv",
+            mime="text/csv",
+        )
+    with c2:
+        st.download_button(
+            "Download Rollout (CSV)",
+            df_plot.reset_index().to_csv(index=False).encode("utf-8"),
+            file_name="evaluation_rollout.csv",
+            mime="text/csv",
+        )
+    # Actions download button rendered after the explanation below
+    # Expose results programmatically via session_state
+    st.session_state["eval_kpis_summary"] = summary_df
+    st.session_state["eval_rollout_df"] = df_plot
 
     st.subheader("Actions")
-    st.line_chart(pd.Series(actions, index=env_eval.df.index[: len(actions)], name="setpoint_delta"))
+    # Explain the action meaning to users
+    deltas = [float(x) for x in env_eval.cfg.action_deltas]
+    st.markdown(
+        """
+        - Actions are hourly HVAC cooling setpoint adjustments (°C) relative to a neutral baseline.
+        - Available deltas: {deltas}
+        - Negative values: lower the setpoint (cool more). Positive values: raise the setpoint (cool less).
+        - Baseline policy uses the action closest to 0.0 (no change).
+        - In this surrogate model, lowering the setpoint tends to increase energy; raising it tends to reduce energy. The effect is stronger during weekday working hours (08:00–18:00).
+        - Comfort penalty applies when the temperature is hot (≥ {t_hot:.0f}°C) and the action lowers the setpoint (negative delta). Penalty grows with the magnitude relative to ±{band:.1f}°C.
+        """.format(
+            deltas=deltas,
+            t_hot=float(env_eval.cfg.comfort_temp_c),
+            band=float(env_eval.cfg.comfort_band_c),
+        )
+    )
+    actions_series = pd.Series(actions, index=env_eval.df.index[: len(actions)], name="setpoint_delta")
+    st.line_chart(actions_series)
+    st.download_button(
+        "Download Actions (CSV)",
+        actions_series.reset_index().to_csv(index=False).encode("utf-8"),
+        file_name="evaluation_actions.csv",
+        mime="text/csv",
+    )
+    st.session_state["eval_actions_series"] = actions_series
 
 
 if __name__ == "__main__":
     main()
-

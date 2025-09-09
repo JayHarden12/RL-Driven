@@ -67,22 +67,34 @@ class BuildingEnergyEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(len(self.cfg.action_deltas))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
 
+        # Pre-extract numpy arrays for fast stepping (avoid pandas .iloc overhead)
+        self._hour_sin_arr = self.df["hour_sin"].to_numpy(dtype=np.float32)
+        self._hour_cos_arr = self.df["hour_cos"].to_numpy(dtype=np.float32)
+        self._is_weekend_arr = self.df["is_weekend"].to_numpy(dtype=np.float32)
+        self._baseline_arr = self.df["baseline"].to_numpy(dtype=np.float32)
+        self._temp_arr = self.df[self.temp_col].to_numpy(dtype=np.float32)
+        self._hours_arr = idx.hour.astype("int16").to_numpy()
+
+        self._n = int(len(self._baseline_arr))
         self._t = 0
         self._prev_delta = 0.0
 
     def _get_obs(self) -> np.ndarray:
-        row = self.df.iloc[self._t]
-        base = float(row["baseline"]) / self.elec_scale if self.cfg.normalize else float(row["baseline"])
-        temp = (float(row[self.temp_col]) - self.temp_mean) / self.temp_std if self.cfg.normalize else float(row[self.temp_col])
-        obs = np.array([
-            float(row["hour_sin"]),
-            float(row["hour_cos"]),
-            float(row["is_weekend"]),
+        t = self._t
+        if self.cfg.normalize:
+            base = float(self._baseline_arr[t]) / self.elec_scale
+            temp = (float(self._temp_arr[t]) - self.temp_mean) / self.temp_std
+        else:
+            base = float(self._baseline_arr[t])
+            temp = float(self._temp_arr[t])
+        return np.array([
+            float(self._hour_sin_arr[t]),
+            float(self._hour_cos_arr[t]),
+            float(self._is_weekend_arr[t]),
             base,
             temp,
             float(self._prev_delta) / 2.0,
         ], dtype=np.float32)
-        return obs
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
@@ -93,30 +105,29 @@ class BuildingEnergyEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action: int):
+        t = self._t
         delta = float(self.cfg.action_deltas[int(action)])
-        row = self.df.iloc[self._t]
-        base_kwh = float(row["baseline"])  # Hourly baseline consumption
+        base_kwh = float(self._baseline_arr[t])
 
         # Load impact model: lower setpoint (negative delta) reduces load during working hours
-        working = 1.0 if (row["is_weekend"] < 0.5 and 8 <= self.df.index[self._t].hour <= 18) else 0.5
+        is_weekend = self._is_weekend_arr[t] >= 0.5
+        hour = int(self._hours_arr[t])
+        working = 1.0 if (not is_weekend and 8 <= hour <= 18) else 0.5
         eff = 1.0 - self.cfg.beta_load_per_deg * (-delta) * working  # negative delta => reduce
         eff = max(0.6, min(1.4, eff))
-        noise = self.rng.normal(0.0, 0.02 * base_kwh)
+        noise = float(self.rng.normal(0.0, 0.02 * base_kwh))
         kwh = max(0.0, base_kwh * eff + noise)
 
         # Comfort penalty: too low setpoint in hot conditions
-        temp_c = float(row[self.temp_col])
-        comfort_low = self.cfg.comfort_temp_c - self.cfg.comfort_band_c
+        temp_c = float(self._temp_arr[t])
         penalty = 0.0
         if temp_c >= self.cfg.comfort_temp_c and delta < 0:
-            # Penalize aggressive cooling when hot outside (proxy for discomfort/overcooling)
             penalty = (abs(delta) / self.cfg.comfort_band_c) ** 2
 
         reward = -self.cfg.lambda_energy * (kwh / max(1.0, self.elec_scale)) - self.cfg.lambda_comfort * penalty
 
-        self._t += 1
+        self._t = t + 1
         self._prev_delta = delta
-        terminated = self._t >= (len(self.df) - 1)
+        terminated = self._t >= (self._n - 1)
         info = {"kwh": kwh, "penalty": penalty, "delta": delta}
         return self._get_obs(), float(reward), terminated, False, info
-

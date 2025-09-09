@@ -31,6 +31,23 @@ def _parse_times(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _read_csv_robust(path: str) -> pd.DataFrame:
+    """Read a CSV with sane fallbacks for occasional malformed rows.
+
+    - Try the default C engine first (fastest).
+    - On ParserError, retry with the Python engine (more forgiving).
+    - If it still fails, skip bad lines with the Python engine.
+    """
+    try:
+        return pd.read_csv(path)
+    except Exception as e1:  # pandas.errors.ParserError et al.
+        try:
+            return pd.read_csv(path, engine="python")
+        except Exception as e2:
+            # Last resort: skip malformed lines; better to load most data than fail.
+            return pd.read_csv(path, engine="python", on_bad_lines="skip")
+
+
 def _load_csv(name: str, dataset_dir: Optional[str] = None) -> pd.DataFrame:
     ds_dir = get_dataset_dir(dataset_dir)
     if not ds_dir:
@@ -38,7 +55,7 @@ def _load_csv(name: str, dataset_dir: Optional[str] = None) -> pd.DataFrame:
     path = os.path.join(ds_dir, f"{name}.csv")
     if not os.path.isfile(path):
         raise FileNotFoundError(f"CSV not found: {path}")
-    df = pd.read_csv(path)
+    df = _read_csv_robust(path)
     return df
 
 
@@ -98,4 +115,3 @@ def combine_meters_for_building(
         raise FileNotFoundError(f"No meters found for building {building_id} in {meters}")
     out = pd.concat(frames, axis=1)
     return out
-

@@ -49,6 +49,10 @@ def main():
         df = _load_building(b, dataset_dir)
     if meters_to_show:
         df = df[[c for c in meters_to_show if c in df.columns]]
+    # Guard against an empty selection (no matching meters)
+    if df.shape[1] == 0:
+        st.warning("No selected meters are available for this building. Choose another meter.")
+        st.stop()
 
     df = df.asfreq("H")
     min_ts, max_ts = df.index.min(), df.index.max()
@@ -56,13 +60,23 @@ def main():
     df_sel = df.loc[str(pd.to_datetime(start, utc=True)) : str(pd.to_datetime(end, utc=True))]
 
     st.subheader("Time Series")
-    fig = px.line(df_sel.reset_index(), x=df_sel.index.name or "timestamp", y=df_sel.columns, labels={"value": "Value", "index": "Time"})
-    st.plotly_chart(fig, use_container_width=True)
+    if df_sel.shape[1] > 0:
+        fig = px.line(
+            df_sel.reset_index(),
+            x=df_sel.index.name or "timestamp",
+            y=df_sel.columns,
+            labels={"value": "Value", "index": "Time"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No data in the selected date range.")
 
     st.subheader("Summary Stats")
-    st.dataframe(df_sel.describe().T, use_container_width=True)
+    if df_sel.shape[1] > 0:
+        st.dataframe(df_sel.describe().T, use_container_width=True)
+    else:
+        st.info("Nothing to summarise for the current selection.")
 
 
 if __name__ == "__main__":
     main()
-

@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .data_loader import load_weather
+from .data_loader import load_weather, load_metadata
 
 
 @dataclass
@@ -30,15 +30,46 @@ def add_time_features(df: pd.DataFrame, index_col: Optional[str] = None) -> pd.D
     return out
 
 
-def merge_weather(df: pd.DataFrame, dataset_dir: Optional[str] = None) -> pd.DataFrame:
+def merge_weather(
+    df: pd.DataFrame,
+    dataset_dir: Optional[str] = None,
+    building_id: Optional[str] = None,
+) -> pd.DataFrame:
+    """Join weather onto a single-building dataframe without exploding rows.
+
+    If `building_id` is provided and metadata is available, use that building's
+    `site_id` to select the corresponding weather series. Otherwise, aggregate
+    weather across sites per timestamp to ensure a unique time index.
+    """
     try:
         w = load_weather(dataset_dir)
     except FileNotFoundError:
         return df
-    # Heuristic: try likely temperature column names
-    temp_cols = [c for c in w.columns if "temp" in c.lower() or c.lower() in ("t2m", "airtemperature")]
+
+    # Filter by site if possible to avoid duplicate timestamp rows
+    w2 = w.copy()
+    site = None
+    if building_id is not None:
+        try:
+            meta = load_metadata(dataset_dir)
+            row = meta.loc[meta["building_id"] == building_id]
+            if not row.empty and "site_id" in row.columns:
+                site = str(row.iloc[0]["site_id"]).strip()
+        except Exception:
+            site = None
+
+    if site and "site_id" in w2.columns:
+        w2 = w2[w2["site_id"].astype(str).str.strip() == site]
+    # Drop identifier and ensure unique timestamp index
+    w2 = w2.drop(columns=["site_id"], errors="ignore")
+    if not w2.index.is_unique:
+        w2 = w2[~w2.index.duplicated(keep="first")]
+
+    # Heuristic: pick a temperature-like column
+    temp_cols = [c for c in w2.columns if "temp" in c.lower() or c.lower() in ("t2m", "airtemperature")]
     use_cols = temp_cols[:1] if temp_cols else []
-    feat = w[use_cols].rename(columns=lambda c: c.lower()) if use_cols else pd.DataFrame(index=w.index)
+    feat = w2[use_cols].rename(columns=lambda c: c.lower()) if use_cols else pd.DataFrame(index=w2.index)
+
     out = df.join(feat, how="left").interpolate(limit_direction="both")
     return out
 
