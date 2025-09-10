@@ -51,6 +51,8 @@ def main():
 
     assert feats is not None and b is not None
     st.caption(f"Using building: {b}")
+    # Store building id for Evaluation and baselines pages
+    st.session_state["rl_building_id"] = b
 
     # Train/Val/Test split selection
     min_ts, max_ts = feats.index.min(), feats.index.max()

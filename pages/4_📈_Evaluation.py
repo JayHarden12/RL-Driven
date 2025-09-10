@@ -55,20 +55,64 @@ def main():
         env_bl = BuildingEnergyEnv(feats_eval.copy(), config=env_train.cfg)
         kwh_bl, _ = rollout_env(env_bl, baseline_policy)
 
-    df_plot = pd.concat([kwh_rl.rename("RL"), kwh_bl.rename("Baseline")], axis=1).dropna()
+    # Optionally include Non-RL baselines if saved for this building
+    extra_series = {}
+    bld = st.session_state.get("rl_building_id") or st.session_state.get("feature_building_id")
+    if bld:
+        import os, joblib
+        found = []
+        for name in ("RF", "SVM", "MLP"):
+            p = os.path.join("artifacts", f"{bld}_NonRL_{name}.pkl")
+            if os.path.isfile(p):
+                found.append((name, p))
+        if found:
+            choose = st.multiselect(
+                "Include Non‑RL baselines",
+                [n for n, _ in found],
+                default=[],
+                help="Trained in the Non‑RL Baselines page",
+            )
+            for name, path in found:
+                if name not in choose:
+                    continue
+                pipe = joblib.load(path)
+                # Rollout using classifier policy
+                def clf_policy(obs, deterministic=True, _pipe=pipe):
+                    import numpy as np
+                    x = np.asarray(obs, dtype=float).reshape(1, -1)
+                    return int(_pipe.predict(x)[0])
+                s_kwh, _ = rollout_env(BuildingEnergyEnv(feats_eval.copy(), config=env_train.cfg), clf_policy)
+                extra_series[name] = s_kwh
+
+    df_plot = pd.concat(
+        [kwh_rl.rename("RL"), kwh_bl.rename("Baseline")] + [s.rename(name) for name, s in extra_series.items()],
+        axis=1,
+    ).dropna()
     fig = px.line(df_plot.reset_index(), x=df_plot.index.name or "timestamp", y=["RL", "Baseline"], labels={"value": "kWh"})
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("KPIs")
-    kpis_rl = compute_kpis(kwh_rl)
     kpis_bl = compute_kpis(kwh_bl)
-    total_rl = kpis_rl[["kwh", "cost_total", "emissions_kg"]].sum()
     total_bl = kpis_bl[["kwh", "cost_total", "emissions_kg"]].sum()
+    rows = []
+    # RL row
+    kpis_rl = compute_kpis(kwh_rl)
+    total_rl = kpis_rl[["kwh", "cost_total", "emissions_kg"]].sum()
+    rows.append(("RL", total_rl))
+    # Extra baselines
+    for name, s in extra_series.items():
+        tot = compute_kpis(s)[["kwh", "cost_total", "emissions_kg"]].sum()
+        rows.append((name, tot))
 
-    # Summary table with absolute and percent savings (Baseline - RL)
-    summary_df = pd.DataFrame({"baseline": total_bl, "rl": total_rl})
-    summary_df["abs_saving"] = summary_df["baseline"] - summary_df["rl"]
-    summary_df["pct_saving"] = (summary_df["abs_saving"] / summary_df["baseline"]).replace([np.inf, -np.inf], np.nan)
+    # Build summary table against Baseline totals
+    summary_df = pd.DataFrame(index=["kwh", "cost_total", "emissions_kg"])
+    summary_df["baseline"] = total_bl
+    for name, tot in rows:
+        summary_df[name] = tot
+    # Compute savings columns
+    for name, _ in rows:
+        summary_df[(name, "abs_saving")] = summary_df["baseline"] - summary_df[name]
+        summary_df[(name, "pct_saving")] = (summary_df[(name, "abs_saving")] / summary_df["baseline"]).replace([np.inf, -np.inf], np.nan)
     st.dataframe(
         summary_df.rename(index={"kwh": "Energy (kWh)", "cost_total": "Cost (USD)", "emissions_kg": "Emissions (kgCO2e)"}),
         use_container_width=True,
